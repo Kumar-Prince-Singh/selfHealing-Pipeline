@@ -73,7 +73,7 @@ pipeline {
             steps {
                 echo "Pushing image to Docker Hub..."
                 retry(2) {
-                    withDockerRegistry([credentialsId: 'docker-hub-credentials', url: 'https://index.docker.io/v1/']) {
+                    withDockerRegistry([credentialsId: 'ram9219', url: 'https://index.docker.io/v1/']) {
                         bat "docker push %DOCKER_IMAGE%:latest"
                     }
                 }
