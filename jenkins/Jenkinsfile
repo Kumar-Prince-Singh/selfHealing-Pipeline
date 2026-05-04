@@ -19,127 +19,89 @@ pipeline {
             }
         }
         
-        stage('🐳 Build Docker Image with Retry') {
+        stage('🐳 Build Docker Image') {
             steps {
-                script {
-                    echo "Building Docker image..."
-                    retry(3) {
-                        bat "docker build -t %DOCKER_IMAGE%:latest ./app"
-                        // Small delay between retries (Windows compatible)
-                        bat "ping -n 2 127.0.0.1 > nul"
-                    }
-                    echo "✅ Build completed!"
-                }
+                echo "Building Docker image..."
+                bat "docker build -t %DOCKER_IMAGE%:latest ./app"
+                echo "✅ Build completed!"
             }
         }
         
-        stage('🧪 Run Tests with Self-Healing') {
+        stage('🧪 Run Tests') {
             steps {
-                script {
-                    echo "Cleaning up any existing test container..."
-                    bat "docker stop test-%APP_NAME% 2>nul || echo no-container-to-stop"
-                    bat "docker rm test-%APP_NAME% 2>nul || echo no-container-to-remove"
-                    
-                    echo "Starting container for testing on port 9090..."
-                    bat "docker run -d --name test-%APP_NAME% -p 9090:5000 %DOCKER_IMAGE%:latest"
-                    bat "ping -n 6 127.0.0.1 > nul"
-                    
-                    echo "Running health tests with retry..."
-                    def testResult = 1
-                    for (int i = 1; i <= 3; i++) {
-                        echo "Test attempt ${i} of 3"
-                        testResult = bat(script: "curl -f http://localhost:9090/health", returnStatus: true)
-                        if (testResult == 0) {
-                            break
-                        }
-                        echo "Attempt ${i} failed, waiting..."
-                        bat "ping -n 4 127.0.0.1 > nul"
-                    }
-
-                    if (testResult != 0) {
-                        echo "⚠️ Tests failed after automatic retries. Pipeline marked UNSTABLE but continuing..."
-                        currentBuild.result = 'UNSTABLE'
-                    } else {
-                        echo "✅ All tests passed!"
-                    }
-
-                    bat "docker stop test-%APP_NAME% 2>nul || echo no-container-to-stop"
-                    bat "docker rm test-%APP_NAME% 2>nul || echo no-container-to-remove"
-                }
+                echo "Cleaning up any existing test container..."
+                bat "(docker stop test-%APP_NAME% || exit 0) > nul 2>&1"
+                bat "(docker rm test-%APP_NAME% || exit 0) > nul 2>&1"
+                
+                echo "Starting container for testing on port 9090..."
+                bat "docker run -d --name test-%APP_NAME% -p 9090:5000 %DOCKER_IMAGE%:latest"
+                
+                echo "Waiting for container to initialize..."
+                bat "ping -n 6 127.0.0.1 > nul"
+                
+                echo "Testing container health..."
+                bat "curl -f http://localhost:9090/health"
+                
+                echo "✅ All tests passed!"
+                
+                echo "Cleaning up test container..."
+                bat "(docker stop test-%APP_NAME% || exit 0) > nul 2>&1"
+                bat "(docker rm test-%APP_NAME% || exit 0) > nul 2>&1"
             }
         }
         
         stage('📤 Push to Docker Hub') {
             steps {
                 echo "Pushing image to Docker Hub..."
-                retry(2) {
-                    withDockerRegistry([credentialsId: 'ram9219', url: 'https://index.docker.io/v1/']) {
-                        bat "docker push %DOCKER_IMAGE%:latest"
-                    }
+                withDockerRegistry([credentialsId: 'ram9219', url: 'https://index.docker.io/v1/']) {
+                    bat "docker push %DOCKER_IMAGE%:latest"
                 }
-                echo "✅ Image pushed successfully to Docker Hub!"
+                echo "✅ Image pushed successfully!"
             }
         }
         
-        stage('🚀 Deploy with Rollback') {
+        stage('🚀 Deploy Application') {
             steps {
-                script {
-                    echo "Deploying application..."
-                    bat "docker-compose -f docker-compose.yml down 2>nul || echo compose-down-failed"
-                    bat "docker-compose -f docker-compose.yml up -d"
-                    echo "✅ Deployment complete!"
-                }
+                echo "Deploying application..."
+                bat "(docker-compose -f docker-compose.yml down || exit 0) > nul 2>&1"
+                bat "docker-compose -f docker-compose.yml up -d"
+                echo "✅ Deployment complete!"
+                echo "📍 Application: http://localhost:5000"
             }
         }
         
-        stage('🩺 Health Check & Auto-Healing') {
+        stage('🩺 Health Check') {
             steps {
-                script {
-                    echo "Waiting for container to stabilize..."
-                    timeout(time: 60, unit: 'SECONDS') {
-                        bat "ping -n 11 127.0.0.1 > nul"
-                        def healthStatus = 1
-                        for (int i = 1; i <= 3; i++) {
-                            echo "Health check attempt ${i}"
-                            healthStatus = bat(script: "curl -f http://localhost:5000/health", returnStatus: true)
-                            if (healthStatus == 0) {
-                                break
-                            }
-                            bat "ping -n 6 127.0.0.1 > nul"
-                        }
-
-                        if (healthStatus != 0) {
-                            echo "⚠️⚠️⚠️ HEALTH CHECK FAILED! Initiating AUTO-ROLLBACK... ⚠️⚠️⚠️"
-                            bat """
-                                echo 🔄 Rolling back to previous version...
-                                docker-compose down
-                                docker-compose up -d
-                                echo ✅ Rollback completed!
-                            """
-                            currentBuild.result = 'UNSTABLE'
-                        } else {
-                            echo "✅ Container is healthy!"
-                        }
-                    }
-                }
+                echo "Waiting for application to stabilize..."
+                bat "ping -n 11 127.0.0.1 > nul"
+                echo "Checking health endpoint..."
+                bat "curl -f http://localhost:5000/health"
+                echo "✅ Application is healthy!"
             }
         }
     }
     
     post {
-        failure {
-            echo """
-            ┌─────────────────────────────────────────────────────────┐
-            │  ❌ PIPELINE FAILED ❌                                   │
-            └─────────────────────────────────────────────────────────┘
-            """
-        }
         success {
             echo """
             ┌─────────────────────────────────────────────────────────┐
             │  ✅ SELF-HEALING PIPELINE SUCCEEDED! ✅                 │
             │                                                          │
-            │  Application running on http://localhost:5000           │
+            │  🚀 Application: http://localhost:5000                  │
+            │  ❤️ Health check: http://localhost:5000/health         │
+            │                                                          │
+            │  ✨ Features demonstrated:                              │
+            │  • Automated Docker builds                              │
+            │  • Container testing with health checks                 │
+            │  • Docker Hub integration                               │
+            │  • Auto-deployment with Docker Compose                  │
+            └─────────────────────────────────────────────────────────┘
+            """
+        }
+        failure {
+            echo """
+            ┌─────────────────────────────────────────────────────────┐
+            │  ❌ PIPELINE FAILED ❌                                   │
             └─────────────────────────────────────────────────────────┘
             """
         }
