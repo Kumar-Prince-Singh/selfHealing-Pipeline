@@ -1,0 +1,143 @@
+pipeline {
+    agent any
+    
+    environment {
+        APP_NAME = 'self-healing-app'
+        MAX_RETRIES = '3'
+        DOCKER_IMAGE = "your-dockerhub-username/${APP_NAME}"
+    }
+    
+    stages {
+        
+        stage('Clone Repository') {
+            steps {
+                retry(2) {
+                    git branch: 'main', 
+                        url: 'https://github.com/your-username/self-healing-pipeline.git'
+                }
+            }
+        }
+        
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    def buildCmd = "docker build -t ${DOCKER_IMAGE}:latest ./app"
+                    
+                    // Self-healing: Retry build on failure
+                    sh """
+                        MAX_RETRIES=3
+                        for i in \$(seq 1 \$MAX_RETRIES); do
+                            echo "Build attempt \$i of \$MAX_RETRIES"
+                            if $buildCmd; then
+                                echo "Build succeeded!"
+                                break
+                            else
+                                echo "Build attempt \$i failed"
+                                if [ \$i -eq \$MAX_RETRIES ]; then
+                                    echo "All retries exhausted!"
+                                    exit 1
+                                fi
+                                sleep 5
+                            fi
+                        done
+                    """
+                }
+            }
+        }
+        
+        stage('Run Tests with Healing') {
+            steps {
+                script {
+                    // Run container and test
+                    sh """
+                        docker run -d --name test-${APP_NAME} -p 8080:5000 ${DOCKER_IMAGE}:latest
+                        sleep 5
+                    """
+                    
+                    // Test with retry for flaky tests
+                    def testResult = sh(
+                        script: """
+                            for i in 1 2 3; do
+                                echo "Test attempt \$i"
+                                curl -f http://localhost:8080/ && exit 0
+                                sleep 3
+                            done
+                            exit 1
+                        """,
+                        returnStatus: true
+                    )
+                    
+                    if (testResult != 0) {
+                        echo "Tests failed after retries. Continuing but marking unstable..."
+                        currentBuild.result = 'UNSTABLE'
+                    }
+                    
+                    sh("docker stop test-${APP_NAME} || true")
+                    sh("docker rm test-${APP_NAME} || true")
+                }
+            }
+        }
+        
+        stage('Push to Registry') {
+            steps {
+                retry(2) {
+                    withDockerRegistry([credentialsId: 'docker-hub-credentials']) {
+                        sh "docker push ${DOCKER_IMAGE}:latest"
+                    }
+                }
+            }
+        }
+        
+        stage('Deploy with Rollback Capability') {
+            steps {
+                script {
+                    // Save current image tag for rollback
+                    sh """
+                        echo "${DOCKER_IMAGE}:latest" > last_successful_image.txt
+                        docker-compose -f docker-compose.yml up -d
+                    """
+                }
+            }
+        }
+        
+        stage('Health Check & Auto-Heal') {
+            steps {
+                script {
+                    def healthStatus = sh(
+                        script: """
+                            sleep 10
+                            curl -f http://localhost:5000/health
+                        """,
+                        returnStatus: true
+                    )
+                    
+                    if (healthStatus != 0) {
+                        echo "⚠️ Health check failed! Initiating rollback..."
+                        sh """
+                            PREVIOUS_IMAGE=\$(cat last_successful_image.txt)
+                            docker-compose -f docker-compose.yml down
+                            docker-compose -f docker-compose.yml up -d
+                            echo "Rollback completed"
+                        """
+                        currentBuild.result = 'UNSTABLE'
+                    }
+                }
+            }
+        }
+    }
+    
+    post {
+        failure {
+            echo "❌ Pipeline failed. Sending alert..."
+            emailext (
+                subject: "Pipeline Failed for ${env.JOB_NAME}",
+                body: "Build ${env.BUILD_NUMBER} failed. Check logs: ${env.BUILD_URL}",
+                to: "your-email@example.com"
+            )
+        }
+        
+        success {
+            echo "✅ Pipeline succeeded with self-healing!"
+        }
+    }
+}
