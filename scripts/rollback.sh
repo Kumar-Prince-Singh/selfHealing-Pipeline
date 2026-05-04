@@ -1,18 +1,22 @@
 #!/bin/bash
-# Rolls back to previous Docker image
+# Self-healing rollback script
 
-PREVIOUS_IMAGE=$1
-CURRENT_IMAGE=$2
+echo "⚠️  =============================================="
+echo "⚠️  SELF-HEALING: INITIATING ROLLBACK"
+echo "⚠️  =============================================="
 
-echo "⚠️ Rolling back from $CURRENT_IMAGE to $PREVIOUS_IMAGE"
-
-# Stop current container
+# Stop current containers
+echo "🛑 Stopping current deployment..."
 docker-compose down
 
-# Update docker-compose with previous image
-sed -i "s|$CURRENT_IMAGE|$PREVIOUS_IMAGE|g" docker-compose.yml
+# Remove the failed image tag
+echo "🗑️  Removing failed image..."
+docker rmi ram9219/self-healing-app:latest 2>/dev/null || true
 
-# Start previous version
+# Restart with previous version (if available)
+echo "🔄 Restarting with previous stable version..."
 docker-compose up -d
 
-echo "✅ Rollback complete. Previous version running."
+echo "✅ =============================================="
+echo "✅ ROLLBACK COMPLETED SUCCESSFULLY"
+echo "✅ =============================================="

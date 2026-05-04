@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   app:
-    image: your-dockerhub-username/self-healing-app:latest
+    image: ram9219/self-healing-app:latest
     ports:
       - "5000:5000"
     restart: unless-stopped
@@ -11,3 +11,4 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 10s
